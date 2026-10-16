@@ -4,7 +4,7 @@ class CopyManga_xiaoyaosheny extends ComicSource {
 
     key = "xiaoyaosheny_copymanga"
 
-    version = "1.1.5"
+    version = "1.1.6"
 
     minAppVersion = "3.1.0"
 
@@ -12,7 +12,10 @@ class CopyManga_xiaoyaosheny extends ComicSource {
 
     headers = {}
 
-    static copyVersion = "2.2.0"
+    /// 官方 App 版本参数: 服务端按该值做版本门禁, 低于 3.0.0 一律返回
+    /// code 210 (請升級到最新的APP(3.0.0)); 3.0.0 实测可用, 2025.08.15 等日期式取值在
+    /// api.mangacopy.com 上无效。登录成功后 headers 的 User-Agent 会跟随该值。
+    static copyVersion = "3.0.0"
 
     /// 备用域名, 依次探测, 第一个可用的会被采用
     domains = ["mangacopy.com", "copymanga.info", "copymanga.org", "copymanga.net", "copymanga.site"]

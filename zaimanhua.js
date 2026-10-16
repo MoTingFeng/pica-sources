@@ -4,7 +4,7 @@ class ZaiManHua extends ComicSource {
 
     key = "zaimanhua"
 
-    version = "2.0.0"
+    version = "2.0.1"
 
     minAppVersion = "3.1.0"
 
@@ -86,32 +86,104 @@ class ZaiManHua extends ComicSource {
         await this._ready
     }
 
-    /// 字节序列 -> 十六进制小写字符串(兼容 ArrayBuffer / Uint8Array / 数组)
-    toHex(value) {
-        if (typeof value === "string") {
-            return value.toLowerCase()
+    /// 字符串 -> UTF-8 字节数组, 不依赖 JS 引擎的编码/散列接口
+    utf8Bytes(text) {
+        var bytes = []
+        for (var i = 0; i < text.length; i++) {
+            var code = text.charCodeAt(i)
+            if (code < 0x80) {
+                bytes.push(code)
+            } else if (code < 0x800) {
+                bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
+            } else if (code >= 0xd800 && code < 0xdc00 && i + 1 < text.length) {
+                var cp = 0x10000 + ((code - 0xd800) << 10) + (text.charCodeAt(++i) - 0xdc00)
+                bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
+                    0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f))
+            } else {
+                bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f),
+                    0x80 | (code & 0x3f))
+            }
         }
-        var bytes = value
-        if (typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer) {
-            bytes = new Uint8Array(value)
-        }
-        if (!bytes || bytes.length === undefined) {
-            throw "无法识别的散列结果类型"
-        }
-        var out = ""
-        for (var i = 0; i < bytes.length; i++) {
-            var part = (bytes[i] & 0xff).toString(16)
-            out += part.length === 1 ? "0" + part : part
-        }
-        return out
+        return bytes
     }
 
     /// 密码散列: 官方 App 传的是 md5(密码) 的小写十六进制。
-    /// 注意 Convert.md5 只接受字节序列, 直接传字符串会被 Dart 侧吞掉并返回 null,
-    /// 这里用 base64 往返把字符串转成字节。
+    /// 这里自带 md5, 不走 Convert 桥: 当前 App 的 base64 分支在 decode 时会先把
+    /// String 转成 Uint8List 再调需要 String 的 base64Decode, 恒定抛类型错误;
+    /// 而 Convert.md5 只接受字节序列, 直接传字符串会得到 null。
     md5Hex(text) {
-        var bytes = Convert.decodeBase64(Convert.encodeBase64(text))
-        return this.toHex(Convert.md5(bytes))
+        var bytes = this.utf8Bytes(text)
+        var bitLen = bytes.length * 8
+        bytes.push(0x80)
+        while (bytes.length % 64 !== 56) {
+            bytes.push(0)
+        }
+        bytes.push(bitLen & 0xff, (bitLen >>> 8) & 0xff, (bitLen >>> 16) & 0xff,
+            (bitLen >>> 24) & 0xff, 0, 0, 0, 0)
+
+        var shifts = [
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+            5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+            4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+            6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+        ]
+        var table = []
+        for (var t = 0; t < 64; t++) {
+            table.push(Math.floor(Math.abs(Math.sin(t + 1)) * 4294967296))
+        }
+
+        var h0 = 0x67452301
+        var h1 = 0xefcdab89
+        var h2 = 0x98badcfe
+        var h3 = 0x10325476
+
+        for (var offset = 0; offset < bytes.length; offset += 64) {
+            var words = []
+            for (var w = 0; w < 16; w++) {
+                words.push(bytes[offset + w * 4] | (bytes[offset + w * 4 + 1] << 8) |
+                    (bytes[offset + w * 4 + 2] << 16) | (bytes[offset + w * 4 + 3] << 24))
+            }
+            var a = h0
+            var b = h1
+            var c = h2
+            var d = h3
+            for (var i = 0; i < 64; i++) {
+                var f, g
+                if (i < 16) {
+                    f = (b & c) | (~b & d)
+                    g = i
+                } else if (i < 32) {
+                    f = (d & b) | (~d & c)
+                    g = (5 * i + 1) % 16
+                } else if (i < 48) {
+                    f = b ^ c ^ d
+                    g = (3 * i + 5) % 16
+                } else {
+                    f = c ^ (b | ~d)
+                    g = (7 * i) % 16
+                }
+                var sum = (a + f + table[i] + words[g]) | 0
+                var rotated = (sum << shifts[i]) | (sum >>> (32 - shifts[i]))
+                a = d
+                d = c
+                c = b
+                b = (b + rotated) | 0
+            }
+            h0 = (h0 + a) | 0
+            h1 = (h1 + b) | 0
+            h2 = (h2 + c) | 0
+            h3 = (h3 + d) | 0
+        }
+
+        var hs = [h0, h1, h2, h3]
+        var out = ""
+        for (var n = 0; n < 4; n++) {
+            for (var k = 0; k < 4; k++) {
+                var byte = (hs[n] >>> (k * 8)) & 0xff
+                out += (byte < 16 ? "0" : "") + byte.toString(16)
+            }
+        }
+        return out
     }
 
     /// 发起一次接口请求并返回解析后的 JSON
