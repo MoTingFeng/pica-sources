@@ -1,10 +1,32 @@
 [
   {
     "key": "xiaoyaosheny_copymanga",
-    "version": "1.1.5"
+    "name": "拷贝漫画（修正）",
+    "version": "1.1.5",
+    "fileName": "copymanga.js"
   },
   {
     "key": "zaimanhua",
-    "version": "2.0.0"
+    "name": "再漫画",
+    "version": "2.0.0",
+    "fileName": "zaimanhua.js"
+  },
+  {
+    "key": "Komiic",
+    "name": "Komiic",
+    "version": "1.0.4",
+    "fileName": "komiic.js"
+  },
+  {
+    "key": "ikmmh",
+    "name": "爱看漫",
+    "version": "1.1.1",
+    "fileName": "ikmmh.js"
+  },
+  {
+    "key": "baozi",
+    "name": "包子漫画",
+    "version": "1.0.0",
+    "fileName": "baozi.js"
   }
 ]
