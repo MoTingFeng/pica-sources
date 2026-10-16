@@ -1,17 +1,22 @@
 # pica-sources
 
-PicaComic 的自维护漫画源仓库。主要解决两件事：
+PicaComic 的自维护漫画源仓库。主要解决三件事：
 
-1. **拷贝漫画源可自更新**：脚本里 `url` 指向本仓库，App 内点「更新」即可拉到最新版，不必重新发版 App。
-2. **域名存活性监测**：GitHub Actions 每天探测各 API 域名，把结果写进 `domains.json`。
+1. **源可自更新**：脚本里 `url` 指向本仓库，App 内点「更新」即可拉到最新版，不必重新发版 App。
+2. **统一源列表**：App 的「添加漫画源 → 浏览列表」指向本仓库的 `index.json`，所有源集中管理，
+   不受上游 `wgh136/pica_configs` 停更（2024-08-23 后无更新）影响。
+3. **域名存活性监测**：GitHub Actions 每天探测各 API 域名，把结果写进 `domains.json`。
 
 ## 文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `copymanga.js` | 拷贝漫画源脚本（PicaComic JS 源） |
-| `zaimanhua.js` | 再漫画源脚本（PicaComic JS 源） |
-| `index.json` | 源清单，App 用它比对版本、发现更新 |
+| `copymanga.js` | 拷贝漫画源（修正版：修 `CopyManga` 未定义 + 多域名自动探测） |
+| `zaimanhua.js` | 再漫画源 |
+| `komiic.js` | Komiic 源（自上游收编，仅改 `url` 指向本仓库） |
+| `ikmmh.js` | 爱看漫源（自上游收编，仅改 `url`） |
+| `baozi.js` | 包子漫画源（自上游收编，仅改 `url`） |
+| `index.json` | 源清单：既供 App「浏览列表」展示，也供更新检查比对版本 |
 | `domains.json` | 由 Actions 每天生成的域名探测结果（含可用域名排序 `order`） |
 | `.github/workflows/probe.yml` | 定时探测任务 |
 
@@ -59,17 +64,37 @@ PicaComic 的自维护漫画源仓库。主要解决两件事：
   语法检查与 30 项离线契约断言（含 md5、登录表单、token 持久化与恢复、
   收藏增删、书架解析），真实接口可用性仍需在真机 App 内确认
 
+## 从上游收编的源（komiic / ikmmh / baozi）
+
+2026-10-16 从上游 `wgh136/pica_configs` 复制过来，**只改了一处**：脚本内 `url` 字段
+由上游地址改为本仓库地址，其余原样保留，`version` 也未改动（内容未变）。
+
+| 脚本 | 站点 / 接口域名 | 本机实测（2026-10-16，Node fetch） |
+| --- | --- | --- |
+| `komiic.js` | `komiic.com` | DNS 可解析，TCP 不通（本机网络所致） |
+| `ikmmh.js` | `ymcdnyfqdapp.ikmmh.com` | DNS 可解析，HTTP 404（服务在线，根路径 404 正常） |
+| `baozi.js` | `cn.baozimh.com` / `static-tw.baozimh.com` | 前者 TCP 不通；后者 HTTP 403（在线） |
+
+**未联调**：本机网络到这 3 个源的主域名不通，无法验证真实接口。仅完成 `node --check`
+语法检查、类字段核对与「未定义全局标识符」扫描（均无问题）。真机能否可用需在 App 内确认。
+
+上游那个名为「拷贝漫画」的 `copy_manga.js`（key `copy_manga`）**没有收编**：它通篇硬编码
+`api.copymanga.tv`，该域名已无 DNS A 记录；本仓库的 `copymanga.js` 已是它的修好版。
+设备上若装过 `copy_manga`，请手动删除。
+
 ## index.json 格式
 
 ```json
 [
-  { "key": "xiaoyaosheny_copymanga", "version": "1.1.5" },
-  { "key": "zaimanhua", "version": "2.0.0" }
+  { "key": "xiaoyaosheny_copymanga", "name": "拷贝漫画（修正）", "version": "1.1.5", "fileName": "copymanga.js" }
 ]
 ```
 
-PicaComic 侧由 `ComicSourceSettings.checkCustomComicSourceUpdate()` 读取，
-逐项比对本地源的 `version`，不一致就提示「有可用更新」并逐个调用 `update()`。
+- **更新检查**：`ComicSourceSettings.checkCustomComicSourceUpdate()` 读本文件，逐项比对
+  本地源的 `version`，不一致就提示「有可用更新」并逐个调用 `update()`（只用到 `key` + `version`）
+- **浏览列表**：App 的「添加漫画源 → 浏览列表」读同一文件，用 `name` + `version` 展示；
+  点「+」时优先取条目里的 `url` 字段，没有才回退到 `<列表仓库前缀>/<fileName>`
+- 已安装判断按 `key` 比对（列表里已有的源会显示 ✓ 而不是 +）
 
 ## domains.json 格式
 
@@ -92,3 +117,6 @@ PicaComic 侧由 `ComicSourceSettings.checkCustomComicSourceUpdate()` 读取，
   接口是否返回 200」**，不能代表中国大陆网络下的可达性，也无法反映官方风控。
 - 仓库连续 60 天无活动时，GitHub 会**自动停用**定时 workflow，且不发通知。
   本仓库每天提交 `domains.json` 正好维持了活动状态。
+- 收编的源（komiic / ikmmh / baozi）`version` 与上游一致，所以**已装上游版本的用户
+  不会收到「有可用更新」提示**（App 的更新检查从源自身 `url` 拉取，会拉回上游版本）。
+  这类设备需先删掉旧源，再从浏览列表重新添加。
