@@ -1,0 +1,72 @@
+name: probe-domains
+
+on:
+  schedule:
+    # 每天 03:17 UTC = 北京时间 11:17，避开整点高峰（cron 在整点更容易延迟/丢跑）
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: probe-domains
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Probe copymanga api domains
+        run: |
+          python3 - <<'PY'
+          import datetime, json, subprocess
+
+          DOMAINS = [
+              "mangacopy.com",
+              "copymanga.org",
+              "copymanga.net",
+              "copymanga.info",
+              "copymanga.site",
+          ]
+
+          def probe(domain):
+              url = "https://api.%s/api/v3/comics?limit=1&offset=0&platform=3" % domain
+              out = subprocess.run(
+                  ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "15", url],
+                  capture_output=True, text=True,
+              ).stdout.strip()
+              code = int(out) if out.isdigit() else 0
+              print("%-20s -> %s" % (domain, out), flush=True)
+              return code
+
+          results = [{"domain": d, "status": probe(d)} for d in DOMAINS]
+          for r in results:
+              r["ok"] = r["status"] == 200
+          order = [r["domain"] for r in results if r["ok"]] + \
+                  [r["domain"] for r in results if not r["ok"]]
+          payload = {
+              "updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "order": order,
+              "results": results,
+          }
+          with open("domains.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+          PY
+
+      - name: Commit result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add domains.json
+          if git diff --staged --quiet; then
+            echo "domains.json unchanged"
+          else
+            git commit -m "chore: probe domains $(date -u +%Y-%m-%d)"
+            git push
+          fi
