@@ -15,7 +15,7 @@ class CopyManga_xiaoyaosheny extends ComicSource {
     static copyVersion = "2.2.0"
 
     /// 备用域名, 依次探测, 第一个可用的会被采用
-    domains = ["mangacopy.com", "copymanga.org", "copymanga.net", "copymanga.info", "copymanga.site"]
+    domains = ["mangacopy.com", "copymanga.info", "copymanga.org", "copymanga.net", "copymanga.site"]
 
     _host = null
 
