@@ -10,6 +10,7 @@ PicaComic 的自维护漫画源仓库。主要解决两件事：
 | 文件 | 作用 |
 | --- | --- |
 | `copymanga.js` | 拷贝漫画源脚本（PicaComic JS 源） |
+| `zaimanhua.js` | 再漫画源脚本（PicaComic JS 源） |
 | `index.json` | 源清单，App 用它比对版本、发现更新 |
 | `domains.json` | 由 Actions 每天生成的域名探测结果（含可用域名排序 `order`） |
 | `.github/workflows/probe.yml` | 定时探测任务 |
@@ -31,11 +32,39 @@ PicaComic 的自维护漫画源仓库。主要解决两件事：
 | 新增 `domains` + `probeDomain()`，`baseUrl` 改为动态取值 | 上游写死 `mangacopy.com`，域名轮换后无法自愈 |
 | 域名列表剔除 `copymanga.tv` / `api.xsskc.com` | 两者已无 DNS A 记录 |
 
+## zaimanhua.js 说明
+
+- `key = "zaimanhua"`，`version = "2.0.0"`，导入方式与拷贝漫画源相同
+- 接口前缀候选（启动时依次探测，首个返回 200 的被采用）：
+  `https://m.zaimanhua.com/api/app/v1` → `https://v4api.zaimanhua.com/app/v1`
+- `_v` 版本参数默认 `15`（社区客户端实测值）。官方 App 当前为 `2.3.8`；
+  详情与章节请求不带该参数时，「神隐」作品会返回「漫画不存在」
+- 已实现：登录、收藏（订阅）、人气榜 / 最近更新 / 分类浏览（explore）、搜索、
+  详情、章节图片、下载（下载与内置源共用同一链路，只要 `loadInfo` 非空即可）
+- 登录：`POST https://account-api.zaimanhua.com/v1/login/passwd`，表单
+  `username` + `passwd=md5(密码)` 小写十六进制。成功后 token 写入源数据
+  （`saveData`），重开 App 自动恢复，后续请求带 `Authorization: Bearer <token>`
+- 收藏：再漫画是单书架，故 `multiFolder = false`。`/comic/sub/list` 读书架、
+  `/comic/sub/add` 与 `/comic/sub/del` 增删；详情页收藏状态取自
+  `/comic/sub/checkIsSub`
+- 未实现：「分类」Tab。JS 源的 `category` 是解析期静态字段，而分类 tagId
+  只能运行时从 `filter/classify` 取得，因此分类入口放在 explore 的「分类浏览」里
+- 图片请求携带 `Referer: https://manhua.zaimanhua.com/`，用于规避防盗链
+- **已知风险点（唯一）**：`Convert.md5` 在 Dart 侧只接受字节序列，传字符串会被
+  静默吞掉并返回 null。脚本用 `Convert.md5(Convert.decodeBase64(Convert.encodeBase64(原文)))`
+  做字节往返绕开这一点，但该桥接行为无法在本机验证；若登录提示
+  「密码加密失败」，即说明这条路径在该版本 JS 引擎上不通
+- **未联调**：2026-10-16 实测本机到 `m.zaimanhua.com` / `manhua.zaimanhua.com`
+  DNS 可解析但 TCP 不通（curl IPv4/IPv6 均 `http=000`）。已完成 `node --check`
+  语法检查与 30 项离线契约断言（含 md5、登录表单、token 持久化与恢复、
+  收藏增删、书架解析），真实接口可用性仍需在真机 App 内确认
+
 ## index.json 格式
 
 ```json
 [
-  { "key": "xiaoyaosheny_copymanga", "version": "1.1.5" }
+  { "key": "xiaoyaosheny_copymanga", "version": "1.1.5" },
+  { "key": "zaimanhua", "version": "2.0.0" }
 ]
 ```
 
