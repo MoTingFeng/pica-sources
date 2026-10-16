@@ -4,7 +4,7 @@ class ZaiManHua extends ComicSource {
 
     key = "zaimanhua"
 
-    version = "2.0.1"
+    version = "2.0.2"
 
     minAppVersion = "3.1.0"
 
@@ -243,27 +243,53 @@ class ZaiManHua extends ComicSource {
         }
     }
 
+    /// 作者/题材字段 -> 标签数组。
+    /// 详情接口给的是对象数组([{tag_name: "..."}]), 而列表接口给的是分隔符字符串
+    /// ("校园"、"作者A、作者B"), 两种形态都要认, 否则列表卡片的 tags 恒为空。
+    splitTagText(value) {
+        if (!value) {
+            return []
+        }
+        if (Array.isArray(value)) {
+            var fromArray = []
+            value.forEach(function (item) {
+                if (item && item.tag_name) {
+                    fromArray.push(item.tag_name)
+                }
+            })
+            return fromArray
+        }
+        if (typeof value !== "string") {
+            return []
+        }
+        var parts = value.split(/[,\/、|]/)
+        var res = []
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i].trim()
+            if (part) {
+                res.push(part)
+            }
+        }
+        return res
+    }
+
     /// 列表项 -> 卡片数据 (id 必须为字符串, 否则 Dart 侧解析失败)
     parseComic(comic) {
         var tags = []
-        if (comic.authors && Array.isArray(comic.authors)) {
-            comic.authors.forEach(function (a) {
-                if (a && a.tag_name) {
-                    tags.push(a.tag_name)
-                }
-            })
-        }
-        if (comic.types && Array.isArray(comic.types)) {
-            comic.types.forEach(function (t) {
-                if (t && t.tag_name) {
-                    tags.push(t.tag_name)
-                }
-            })
+        this.splitTagText(comic.types).forEach(function (t) {
+            tags.push(t)
+        })
+        this.splitTagText(comic.authors).forEach(function (a) {
+            tags.push(a)
+        })
+        var subTitle = comic.sub_title || ""
+        if (!subTitle && typeof comic.authors === "string") {
+            subTitle = comic.authors
         }
         return {
             id: "" + comic.id,
             title: comic.title || comic.name || "",
-            subTitle: comic.sub_title || "",
+            subTitle: subTitle,
             cover: comic.cover || "",
             tags: tags,
             description: comic.description || ""
@@ -370,6 +396,75 @@ class ZaiManHua extends ComicSource {
             this.deleteData("uid")
             this.deleteData("nickname")
             log('info', '再漫画', '已退出登录')
+        }
+    }
+
+    /// 分类页(「分类」tab 下的再漫画页): 题材网格。
+    /// tagId 取自 /comic/filter/classify 的题材组; 该接口不认读者群/地域参数
+    /// (实测 audience/readerGroup/zone/region 等 14 个候选名均无效), 故这两组不列。
+    category = {
+        title: "再漫画",
+        parts: [
+            {
+                name: "题材",
+                type: "fixed",
+                categories: ["全部", "冒险", "欢乐向", "格斗", "科幻", "爱情", "侦探", "竞技",
+                    "魔法", "神鬼", "校园", "惊悚", "其他", "四格", "亲情", "ゆり", "秀吉", "悬疑",
+                    "纯爱", "热血", "泛爱", "历史", "战争", "萌系", "宅系", "治愈", "励志", "武侠",
+                    "机战", "音乐舞蹈", "美食", "职场", "西方魔幻", "高清单行", "TS", "东方", "魔幻",
+                    "奇幻", "节操", "轻小说", "颜艺", "搞笑", "仙侠", "舰娘", "动画", "AA", "福瑞",
+                    "生存", "日常", "画集", "2025冬", "2026春"],
+                itemType: "category",
+                categoryParams: ["", "4", "5", "6", "7", "8", "9", "10",
+                    "11", "12", "13", "14", "16", "17", "3242", "3243", "3244", "3245",
+                    "3246", "3248", "3249", "3250", "3251", "3252", "3253", "3254", "3255", "3324",
+                    "3325", "3326", "3327", "3328", "3365", "4459", "4518", "5077", "5806", "5848",
+                    "6219", "6316", "6437", "7568", "7900", "13627", "17192", "18522", "23323", "23388",
+                    "30788", "31137", "34093", "36172"]
+            }
+        ]
+    }
+
+    /// 分类页的筛选与列表: 题材(param) + 进度 + 排序。
+    /// 分页用接口返回的 totalNum 精确计算, 不再按本次条数猜。
+    categoryComics = {
+        optionList: [
+            {
+                options: ["0-全部", "2309-连载中", "2310-已完结", "29205-短篇"],
+                notShowWhen: [],
+                showWhen: null
+            },
+            {
+                options: ["*1-最近更新", "2-人气最高"],
+                notShowWhen: [],
+                showWhen: null
+            }
+        ],
+
+        load: async (category, param, options, page) => {
+            var params = {
+                page: page,
+                size: this.pageSize,
+                sortType: String(options[1] || "").replace("*", "") || "1"
+            }
+            if (param) {
+                params.theme = param
+            }
+            var status = String(options[0] || "").replace("*", "")
+            if (status && status !== "0") {
+                params.status = status
+            }
+
+            var data = await this.api("/comic/filter/list", params)
+            var list = (data.data && data.data.comicList) ? data.data.comicList : []
+            var total = (data.data && data.data.totalNum) ? data.data.totalNum : 0
+            var self = this
+            return {
+                comics: list.map(function (c) {
+                    return self.parseComic(c)
+                }),
+                maxPage: total > 0 ? Math.ceil(total / this.pageSize) : page
+            }
         }
     }
 
