@@ -4,7 +4,7 @@ class CopyManga_xiaoyaosheny extends ComicSource {
 
     key = "xiaoyaosheny_copymanga"
 
-    version = "1.1.6"
+    version = "1.1.7"
 
     minAppVersion = "3.1.0"
 
@@ -18,7 +18,9 @@ class CopyManga_xiaoyaosheny extends ComicSource {
     static copyVersion = "3.0.0"
 
     /// 备用域名, 依次探测, 第一个可用的会被采用
-    domains = ["mangacopy.com", "copymanga.info", "copymanga.org", "copymanga.net", "copymanga.site"]
+    /// 2026-10-16 实测: copymanga.info/.org/.net 皆 SSL EOF, copymanga.site 证书错误,
+    /// api.copymanga.tv 域名已废, 只有 mangacopy.com 可用, 故不再保留其余域名
+    domains = ["mangacopy.com"]
 
     _host = null
 
@@ -29,11 +31,23 @@ class CopyManga_xiaoyaosheny extends ComicSource {
             let d = this.domains[i]
             try {
                 let res = await Network.get(`https://api.${d}/api/v3/comics?limit=1&offset=0&platform=3`, this.headers)
-                if (res.status === 200) {
-                    this._host = d
-                    log('info', 'CopyManga', `using domain: ${d}`)
-                    return d
+                if (res.status !== 200) {
+                    throw `http ${res.status}`
                 }
+                // 只判断 HTTP 200 会把「HTTP 200 + 业务 code 210」误判为域名可用:
+                // api.mangacopy.com 在 version 不为 3.0.0 时正是这样返回的
+                let code = null
+                try {
+                    code = JSON.parse(res.body).code
+                } catch (e) {
+                    // body 非 JSON (例如字面 error), 视为不可用
+                }
+                if (code !== 200) {
+                    throw `business code ${code}`
+                }
+                this._host = d
+                log('info', 'CopyManga', `using domain: ${d}`)
+                return d
             } catch (e) {
                 log('warning', 'CopyManga', `domain ${d} failed: ${e}`)
             }
@@ -84,11 +98,16 @@ class CopyManga_xiaoyaosheny extends ComicSource {
                     ...this.headers,
                     "Content-Type": "application/x-www-form-urlencoded;charset=utf-8"
                 },
-                `username=${account}&password=${base64}\n&salt=${salt}&platform=3&authorization=Token+&version=1.4.4&source=copyApp&region=1&webp=1`
+                `username=${account}&password=${base64}&salt=${salt}&platform=3&authorization=Token+&version=${CopyManga_xiaoyaosheny.copyVersion}&source=copyApp&region=1&webp=1`
             );
             if (res.status === 200) {
                 let data = JSON.parse(res.body)
-                let token = data.results.token
+                // 版本门禁与「破解版限制」都会返回 code 210 + results 为 null,
+                // 直接取 .token 会抛 TypeError: cannot read property 'token' of null
+                let token = data.results && data.results.token
+                if (!token) {
+                    throw `登录失败: ${data.message || (data.results && data.results.detail) || res.body}`
+                }
                 this.saveData('token', token)
                 this.headers = {
                     "User-Agent": "COPY/" + CopyManga_xiaoyaosheny.copyVersion,
@@ -103,7 +122,14 @@ class CopyManga_xiaoyaosheny extends ComicSource {
                 }
                 return "ok"
             } else {
-                throw `Invalid Status Code ${res.status}`
+                // 非 200 (实测「破解版限制」返回 HTTP 210) 时透传服务端文案, 不要只报状态码
+                let msg = null
+                try {
+                    let data = JSON.parse(res.body)
+                    msg = data.message || (data.results && data.results.detail)
+                } catch (e) {
+                }
+                throw msg ? `登录失败(${res.status}): ${msg}` : `Invalid Status Code ${res.status}`
             }
         },
         // callback when user log out
