@@ -39,13 +39,22 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 
 ## zaimanhua.js 说明
 
-- `key = "zaimanhua"`，`version = "2.0.0"`，导入方式与拷贝漫画源相同
-- 接口前缀候选（启动时依次探测，首个返回 200 的被采用）：
-  `https://m.zaimanhua.com/api/app/v1` → `https://v4api.zaimanhua.com/app/v1`
-- `_v` 版本参数默认 `15`（社区客户端实测值）。官方 App 当前为 `2.3.8`；
-  详情与章节请求不带该参数时，「神隐」作品会返回「漫画不存在」
+- `key = "zaimanhua"`，`version = "2.2.0"`，导入方式与拷贝漫画源相同
+- 接口前缀候选（启动时依次探测，首个返回 200 的被采用）：**v4api 优先**，
+  `https://v4api.zaimanhua.com/app/v1` → `https://m.zaimanhua.com/api/app/v1`。
+  两者不是同一套接口：v4api 是官方新版接口，分类/标签与书架返回的作品比
+  m 站老接口全（老接口看着「没有那本漫画」）。探测不过会自动落到 m 站
+- `_v` 按域名取（`hostProfiles`）：m 站 `15`（社区客户端实测值）、v4api `2.3.8`。
+  v4api 还要带 `platform=android` 与渠道号 `_c`，否则数据可能不全。详情与章节
+  请求不带 `_v` 时，「神隐」作品会返回「漫画不存在」
+- 公开接口（人气榜 / 分类 / 搜索 / 详情）在已登录时也**顺带带上 `Authorization`**
+  —— 再漫画登录后能看到的作品更多；token 被服务端拒掉时自动去掉身份重试一次，
+  浏览不会因为一个过期的 token 整个挂掉
+- `filter/list` 显式传 `cate=0`（受众）与 `zone=0`（地区）表示「全部」；
+  不传时服务端可能走另一套默认筛选，标签下会少一批
 - 已实现：登录、收藏（订阅）、人气榜 / 最近更新 / 分类浏览（explore）、搜索、
-  详情、章节图片、下载（下载与内置源共用同一链路，只要 `loadInfo` 非空即可）
+  详情、章节图片、下载（下载与内置源共用同一链路，只要 `loadInfo` 非空即可）、
+  自动签到与任务领奖
 - 登录：`POST https://account-api.zaimanhua.com/v1/login/passwd`，表单
   `username` + `passwd=md5(密码)` 小写十六进制。成功后 token 写入源数据
   （`saveData`），重开 App 自动恢复，后续请求带 `Authorization: Bearer <token>`
@@ -59,10 +68,27 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
   静默吞掉并返回 null。脚本用 `Convert.md5(Convert.decodeBase64(Convert.encodeBase64(原文)))`
   做字节往返绕开这一点，但该桥接行为无法在本机验证；若登录提示
   「密码加密失败」，即说明这条路径在该版本 JS 引擎上不通
-- **未联调**：2026-10-16 实测本机到 `m.zaimanhua.com` / `manhua.zaimanhua.com`
-  DNS 可解析但 TCP 不通（curl IPv4/IPv6 均 `http=000`）。已完成 `node --check`
-  语法检查与 30 项离线契约断言（含 md5、登录表单、token 持久化与恢复、
-  收藏增删、书架解析），真实接口可用性仍需在真机 App 内确认
+- 自动签到：`POST https://m.zaimanhua.com/lpi/v1/task/sign_in`，随后
+  `GET /task/list` 并领取 `dayTask` / `newUserTask` 里可领的奖励
+  （`sumSignTask` 是累计签到里程碑，其 id 属另一套编号，领奖时跳过）。
+  挂在 `init()` 上：每次冷启动 App 跑一次，当天已跑过则跳过。JS 源没有定时器，
+  做不到「每天定点」执行；失败只写日志、不记日期，下次启动重试
+- 分页：`nextPage` 只要本页有数据就认为还有下一页。**不能**按「本页条数 ≥
+  pageSize(20)」判断 —— `/comic/sub/list` 会无视 `size` 只回很少几条，
+  那样会被误判成「没有下一页」，书架里后面的收藏整个看不到
+- 章节名：标题含「卷」（单行本）的追加 `(可能需购买)`。再漫画的「卷」多数要
+  购买或更高等级才能读，而详情接口不返回可读性，只能按标题提示；`loadEp`
+  取不到时抛 `章节不可阅读(需购买或更高等级): <章节名>`，不再只说「需要登录」
+- **未联调**：本机到 `m.zaimanhua.com` / `v4api.zaimanhua.com` /
+  `manhua.zaimanhua.com` 至今 TCP 不通（2026-10-16 与 2026-10-19 两次实测 curl
+  均 `http=000`）。已完成 `node --check` 语法检查与 74 项离线契约断言（含 md5、
+  登录表单、token 持久化与恢复、收藏增删、书架解析、签到与领奖的请求形态、
+  分页判定、「卷」标注、两套域名的 `_v` 与客户端标识、公开接口带 token 及
+  被拒后的回退重试），真实接口可用性仍需真机确认
+- **真机已验证**：2026-10-19 设备日志显示章节接口
+  `GET /comic/chapter/{comicId}/{chapterId}?_v=15` 并发请求均返回 200，
+  逐话拉取图片列表正常（下载「获取图片信息」阶段偏慢的原因见
+  PicaComic 的 `CustomDownloadingItem.getLinks`，与本源无关）
 
 ## 从上游收编的源（komiic / ikmmh / baozi）
 

@@ -4,24 +4,43 @@ class ZaiManHua extends ComicSource {
 
     key = "zaimanhua"
 
-    version = "2.0.2"
+    version = "2.2.0"
 
     minAppVersion = "3.1.0"
 
     url = "https://raw.githubusercontent.com/MoTingFeng/pica-sources/main/zaimanhua.js"
 
-    /// 官方 App 版本参数(_v): 详情与章节接口不带该参数时, 隐藏作品会返回"漫画不存在"。
-    /// 15 为社区客户端实测可用值; 官方当前版本号为 2.3.8, 若 15 失效可改为 "2.3.8"。
-    appVersion = "15"
-
-    /// 内容接口前缀候选, 启动时依次探测, 第一个返回 200 的被采用
+    /// 内容接口前缀候选, 启动时依次探测, 第一个返回 200 的被采用。
+    ///
+    /// v4api 放前面: 它与 m 站不是同一套接口 —— 官方新版客户端走 v4api,
+    /// 分类/标签与书架返回的作品比老接口全(老接口看着"没有那本漫画")。
+    /// 探测不过会自动落到 m 站, 所以换顺序得到的是"优先用新的"而不是"只能用新的"。
     apiHosts = [
-        "https://m.zaimanhua.com/api/app/v1",
         "https://v4api.zaimanhua.com/app/v1",
+        "https://m.zaimanhua.com/api/app/v1",
     ]
+
+    /// 各内容接口域名对应的客户端伪装参数。
+    ///
+    /// _v 是官方 App 版本参数: 详情与章节接口不带时会返回"漫画不存在"(隐藏作品)。
+    /// m 站是老接口, 社区客户端实测 _v=15 可用; v4api 是新接口, 除版本号外还要
+    /// platform 与渠道号 _c, 否则拿到的数据可能不全。
+    hostProfiles = {
+        "https://m.zaimanhua.com/api/app/v1": { version: "15", extra: "" },
+        "https://v4api.zaimanhua.com/app/v1": {
+            version: "2.3.8",
+            extra: "&platform=android&_c=101_01_01_000"
+        }
+    }
 
     /// 账号接口与内容接口不同域
     accountApi = "https://account-api.zaimanhua.com/v1"
+
+    /// 签到与任务接口: 与内容接口同域, 但路径在 /lpi/v1
+    taskApi = "https://m.zaimanhua.com/lpi/v1"
+
+    /// 任务状态: 1=未完成, 2=可领取, 3=已领取
+    taskClaimable = 2
 
     pageSize = 20
 
@@ -51,14 +70,17 @@ class ZaiManHua extends ComicSource {
         this.token = this.loadData("token") || null
         this.uid = this.loadData("uid") || null
         this._ready = this.probeHost()
+        /// 不 await: 签到不该拖慢源加载, 失败只进日志
+        this.autoSignIn()
     }
 
     async probeHost() {
         for (var i = 0; i < this.apiHosts.length; i++) {
             var host = this.apiHosts[i]
+            var profile = this.profileOf(host)
             try {
                 var res = await Network.get(
-                    host + "/comic/filter/classify?_v=" + this.appVersion,
+                    host + "/comic/filter/classify?_v=" + profile.version + profile.extra,
                     this.headers
                 )
                 if (res.status === 200) {
@@ -77,6 +99,21 @@ class ZaiManHua extends ComicSource {
 
     get baseUrl() {
         return this._base || this.apiHosts[0]
+    }
+
+    profileOf(host) {
+        var profile = this.hostProfiles[host]
+        return profile ? profile : { version: "15", extra: "" }
+    }
+
+    /// 当前内容接口的 _v
+    get appVersion() {
+        return this.profileOf(this.baseUrl).version
+    }
+
+    /// 当前内容接口额外要带的客户端标识(v4api 专用, 老接口为空串)
+    get clientExtra() {
+        return this.profileOf(this.baseUrl).extra
     }
 
     async ensureHost() {
@@ -186,16 +223,22 @@ class ZaiManHua extends ComicSource {
         return out
     }
 
-    /// 发起一次接口请求并返回解析后的 JSON
-    async request(path, params, authed) {
+    /// 发起一次接口请求并返回解析后的 JSON。
+    ///
+    /// [authed] 为 true 表示这是必须登录的接口: 缺 token 直接报错, 失败时判定为
+    /// 登录失效(抛含 "Login expired" 的错误, App 会据此自动重登)。
+    /// [withToken] 表示公开接口也顺带带上账号 —— 再漫画登录后能看到的作品比未登录多,
+    /// 不带 token 时分类/标签下会少一批, 看起来像"这个标签里没有那本漫画"。
+    async request(path, params, authed, withToken) {
         await this.ensureHost()
 
+        var sendToken = !!this.token && (authed || withToken)
         var requestHeaders = Object.assign({}, this.headers)
-        if (authed) {
+        if (sendToken) {
             requestHeaders["Authorization"] = "Bearer " + this.token
         }
 
-        var url = this.baseUrl + path + "?_v=" + this.appVersion
+        var url = this.baseUrl + path + "?_v=" + this.appVersion + this.clientExtra
         if (params) {
             var keys = Object.keys(params)
             for (var i = 0; i < keys.length; i++) {
@@ -218,9 +261,14 @@ class ZaiManHua extends ComicSource {
         }
         if (data.errno !== undefined && data.errno !== 0) {
             var message = data.errmsg || ("接口返回错误 " + data.errno)
+            /// 公开接口顺带带的 token 被拒了(常见于 token 过期): 去掉身份原样重来
+            /// 一次 —— 浏览不该因为一个过期的 token 整个挂掉
+            if (!authed && sendToken && this.isLoginMessage(message)) {
+                log('warning', '再漫画', 'token 被拒, 改用未登录身份重试: ' + message)
+                return this.request(path, params, false, false)
+            }
             /// token 失效时抛出包含 Login expired 的错误, App 会据此自动重登
-            if (authed && (message.indexOf("登录") >= 0 || message.indexOf("token") >= 0 ||
-                message.indexOf("过期") >= 0 || message.indexOf("失效") >= 0)) {
+            if (authed && this.isLoginMessage(message)) {
                 throw "Login expired: " + message
             }
             throw message
@@ -228,8 +276,18 @@ class ZaiManHua extends ComicSource {
         return data
     }
 
+    /// 该错误文案是否属于"登录态有问题"
+    isLoginMessage(message) {
+        if (!message) {
+            return false
+        }
+        return message.indexOf("登录") >= 0 || message.indexOf("token") >= 0 ||
+            message.indexOf("过期") >= 0 || message.indexOf("失效") >= 0
+    }
+
+    /// 公开接口(分类/排行/搜索/详情)也带上账号
     api(path, params) {
-        return this.request(path, params, false)
+        return this.request(path, params, false, true)
     }
 
     authApi(path, params) {
@@ -241,6 +299,151 @@ class ZaiManHua extends ComicSource {
         if (!this.token) {
             throw "Not login"
         }
+    }
+
+    /// 打开 App 时的自动签到 + 任务领奖。
+    ///
+    /// JS 源没有定时器(setTimeout / Timer 都没暴露), 做不到"每天定时"执行,
+    /// 所以只能挂在 init 上: 每次源被加载(即冷启动 App)时跑一次, 当天已跑过就跳过。
+    /// 全链路静默 —— 任何失败只写日志, 不外抛, 不影响浏览。
+    async autoSignIn() {
+        if (!this.token) {
+            return
+        }
+        if (this.loadData("taskDate") === this.today()) {
+            return
+        }
+        try {
+            var signed = await this.signIn()
+            var claimed = await this.claimTaskRewards()
+            this.saveData("taskDate", this.today())
+            log('info', '再漫画', '每日任务: ' + signed +
+                (claimed > 0 ? ('; 领取了 ' + claimed + ' 项奖励') : ''))
+        } catch (e) {
+            /// 故意不写 taskDate: 本次没跑成, 下次启动再试
+            log('warning', '再漫画', '每日任务失败: ' + e)
+        }
+    }
+
+    today() {
+        var d = new Date()
+        var m = d.getMonth() + 1
+        var day = d.getDate()
+        return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day
+    }
+
+    /// 签到: POST /task/sign_in
+    /// errno==1 是「今日已签到」这类业务提示, 不算失败, 也不该拦住后面的领奖
+    async signIn() {
+        var data = await this.taskRequest("POST", "/task/sign_in")
+        var errno = (data.errno === undefined || data.errno === null) ? 0 : data.errno
+        if (errno !== 0) {
+            var message = data.errmsg || ("签到接口返回 " + errno)
+            /// 「已签到」的文案各版本不一(已签到 / 今天已经签到啦 / 请勿重复签到),
+            /// 逐个匹配, 命中即视为正常; 其余非 0 是真实错误, 抛出去让当天可重试
+            var doneWords = ["已签到", "已经签到", "重复签到"]
+            for (var i = 0; i < doneWords.length; i++) {
+                if (message.indexOf(doneWords[i]) >= 0) {
+                    return message
+                }
+            }
+            throw message
+        }
+        return "签到成功"
+    }
+
+    /// 领取可领的任务奖励, 返回成功条数。
+    ///
+    /// 只处理 dayTask / newUserTask: sumSignTask 是累计签到里程碑, 它的 id 属于
+    /// 另一套编号, 拿去 /task/get_reward 会失败(官方客户端的任务中心同样跳过该组)。
+    async claimTaskRewards() {
+        var data = await this.taskRequest("GET", "/task/list")
+        var task = (data.data && data.data.task) ? data.data.task : null
+        if (!task) {
+            return 0
+        }
+
+        var credits = (data.data && data.data.userCurrency) ? data.data.userCurrency.credits : null
+        if (credits !== null && credits !== undefined) {
+            log('info', '再漫画', '当前积分: ' + credits)
+        }
+
+        var groups = [task.dayTask, task.newUserTask]
+        var claimed = 0
+        for (var g = 0; g < groups.length; g++) {
+            var list = groups[g]
+            if (!Array.isArray(list)) {
+                continue
+            }
+            for (var i = 0; i < list.length; i++) {
+                var item = list[i]
+                if (!item || !this.isClaimable(item)) {
+                    continue
+                }
+                var taskId = item.id || item.task_id || item.taskId
+                if (!taskId) {
+                    continue
+                }
+                try {
+                    /// 参数名没有公开文档, 三个候选一起带, 服务端挑认得的那个
+                    await this.taskRequest("GET", "/task/get_reward", {
+                        task_id: taskId,
+                        taskId: taskId,
+                        id: taskId
+                    })
+                    claimed++
+                } catch (e) {
+                    log('warning', '再漫画', '领取奖励失败(' + (item.title || taskId) + '): ' + e)
+                }
+            }
+        }
+        return claimed
+    }
+
+    /// 是否可领: 实机 status 2=可领取; status 缺失时退回按进度判断
+    isClaimable(item) {
+        if (item.status === this.taskClaimable) {
+            return true
+        }
+        if (item.status === undefined || item.status === null || item.status === 0) {
+            var progress = item.progress_count || item.progress || 0
+            var target = item.target_count || item.target || 0
+            return target > 0 && progress >= target
+        }
+        return false
+    }
+
+    /// 签到/任务接口: 基址固定, query 固定带 channel/timestamp/uid
+    async taskRequest(method, path, params) {
+        this.requireLogin()
+
+        var url = this.taskApi + path +
+            "?channel=android&timestamp=" + Math.floor(Date.now() / 1000)
+        if (this.uid) {
+            url += "&uid=" + encodeURIComponent(this.uid)
+        }
+        if (params) {
+            var keys = Object.keys(params)
+            for (var i = 0; i < keys.length; i++) {
+                url += "&" + keys[i] + "=" + encodeURIComponent(params[keys[i]])
+            }
+        }
+
+        var headers = Object.assign({}, this.headers)
+        headers["Authorization"] = "Bearer " + this.token
+
+        var res = (method === "POST")
+            ? await Network.post(url, headers, "")
+            : await Network.get(url, headers)
+
+        if (res.status !== 200) {
+            throw "任务接口 HTTP " + res.status
+        }
+        var data = JSON.parse(res.body)
+        if (data === null || data === undefined) {
+            throw "任务接口返回空数据"
+        }
+        return data
     }
 
     /// 作者/题材字段 -> 标签数组。
@@ -296,9 +499,25 @@ class ZaiManHua extends ComicSource {
         }
     }
 
-    /// 是否还有下一页: 接口未返回总页数时按本次条数判断
+    /// 是否还有下一页。
+    ///
+    /// 不能按"本页条数 >= pageSize"判断: 再漫画的部分接口(如书架 /comic/sub/list)
+    /// 会无视 size 只返回很少几条, 那样会被误判成"没有下一页", 后面的收藏就整个看不到了。
+    /// 只要本页有数据就先认为还有下一页 —— App 侧有"空页就停"的兜底, 多请求一次是安全的。
     nextPage(list, page) {
-        return list.length >= this.pageSize ? page + 1 : page
+        return list.length > 0 ? page + 1 : page
+    }
+
+    /// 话的显示名。
+    ///
+    /// "卷"(单行本)在再漫画通常要购买或更高等级才能读, 而详情接口不返回可读性,
+    /// 只能按标题里的"卷"字提示一下, 免得把它当普通话选了、下载时才发现取不到图片。
+    epTitle(chapter) {
+        var title = chapter.chapter_title || ("" + chapter.chapter_id)
+        if (title.indexOf("卷") >= 0 && title.indexOf("(可能需购买)") < 0) {
+            title = title + "(可能需购买)"
+        }
+        return title
     }
 
     /// 读取筛选项 (0=主题 1=受众 2=状态 3=地域)
@@ -315,7 +534,11 @@ class ZaiManHua extends ComicSource {
         var params = {
             page: page,
             size: this.pageSize,
-            sortType: 1
+            sortType: 1,
+            /// cate(受众)/zone(地区) 显式给 0 = 全部。不传时服务端可能走另一套
+            /// 默认筛选, 结果是标签下少一批作品
+            cate: 0,
+            zone: 0
         }
         if (extra) {
             var keys = Object.keys(extra)
@@ -445,7 +668,10 @@ class ZaiManHua extends ComicSource {
             var params = {
                 page: page,
                 size: this.pageSize,
-                sortType: String(options[1] || "").replace("*", "") || "1"
+                sortType: String(options[1] || "").replace("*", "") || "1",
+                /// 同 filterList: 显式声明"全部受众 / 全部地区"
+                cate: 0,
+                zone: 0
             }
             if (param) {
                 params.theme = param
@@ -585,7 +811,7 @@ class ZaiManHua extends ComicSource {
             if (d.chapters && d.chapters.length > 0 && d.chapters[0].data) {
                 var raw = d.chapters[0].data
                 for (var i = raw.length - 1; i >= 0; i--) {
-                    chapters["" + raw[i].chapter_id] = raw[i].chapter_title
+                    chapters["" + raw[i].chapter_id] = this.epTitle(raw[i])
                 }
             }
 
@@ -621,7 +847,9 @@ class ZaiManHua extends ComicSource {
                 throw "章节不存在或已被删除"
             }
             if (d.canRead === false) {
-                throw "该章节需要登录或更高账号权限"
+                /// 带上章节名: 再漫画的"卷"(单行本)多数要购买或更高等级才能读,
+                /// 只说"需要登录"会让人以为是自己没登录, 白折腾半天
+                throw "章节不可阅读(需购买或更高等级): " + (d.title || epId)
             }
             var urls = d.page_url || []
             if (!Array.isArray(urls) || urls.length === 0) {
