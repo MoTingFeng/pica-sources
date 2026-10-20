@@ -4,7 +4,7 @@ class ZaiManHua extends ComicSource {
 
     key = "zaimanhua"
 
-    version = "2.2.1"
+    version = "2.2.2"
 
     minAppVersion = "3.1.0"
 
@@ -732,6 +732,57 @@ class ZaiManHua extends ComicSource {
                     return self.parseComic(c)
                 }),
                 maxPage: total > 0 ? Math.ceil(total / this.pageSize) : page
+            }
+        },
+
+        /// 多维度筛选(宿主需支持 categoryComics.loadMulti)。
+        ///
+        /// groupParams 是所有分组的当前选中值: {"题材":"4","读者群":"cate=3262",
+        /// "地域":"zone=2304"}; options 仍是 [进度, 排序]。
+        /// 服务端实测支持四维叠加: 冒险(1477 部) + 少年 + 日本 + 连载中 => 1 部。
+        /// 老宿主不认识本方法, 会继续走上面的 load, 行为不变。
+        loadMulti: async (groupParams, options, page) => {
+            var params = {
+                page: page,
+                size: this.pageSize,
+                sortType: "1",
+                cate: 0,
+                zone: 0
+            }
+            var titles = Object.keys(groupParams || {})
+            for (var i = 0; i < titles.length; i++) {
+                var title = titles[i]
+                var value = groupParams[title]
+                if (value === null || value === undefined || value === "") {
+                    continue
+                }
+                value = "" + value
+                var eq = value.indexOf("=")
+                if (eq > 0) {
+                    /// 读者群 / 地域: 参数名就写在值里(cate=... / zone=...)
+                    params[value.substring(0, eq)] = value.substring(eq + 1)
+                } else if (title === "题材") {
+                    params.theme = value
+                }
+            }
+            var status = String(options[0] || "").replace("*", "")
+            if (status && status !== "0") {
+                params.status = status
+            }
+            var sort = String(options[1] || "").replace("*", "")
+            if (sort) {
+                params.sortType = sort
+            }
+
+            var data = await this.api("/comic/filter/list", params)
+            var list = (data.data && data.data.comicList) ? data.data.comicList : []
+            var total = (data.data && data.data.totalNum) ? data.data.totalNum : 0
+            var self = this
+            return {
+                comics: list.map(function (c) {
+                    return self.parseComic(c)
+                }),
+                maxPage: total > 0 ? Math.ceil(total / this.pageSize) : this.nextPage(list, page)
             }
         }
     }

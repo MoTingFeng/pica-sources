@@ -39,7 +39,7 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 
 ## zaimanhua.js 说明
 
-- `key = "zaimanhua"`，`version = "2.2.1"`，导入方式与拷贝漫画源相同
+- `key = "zaimanhua"`，`version = "2.2.2"`，导入方式与拷贝漫画源相同
 - 接口前缀候选（启动时依次探测，首个返回 200 的被采用）：**v4api 优先**，
   `https://v4api.zaimanhua.com/app/v1` → `https://m.zaimanhua.com/api/app/v1`。
   两者不是同一套接口：v4api 是官方新版接口，分类/标签与书架返回的作品比
@@ -73,6 +73,14 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 - 「分类」Tab：三组入口（题材 / 读者群 / 地域），`categoryParams` 用
   `cate=3262`、`zone=2304` 这样的前缀区分组别，题材组仍传纯 tagId；
   `categoryComics.load` 见到 `=` 就按 `k=v` 覆盖参数，否则当作题材
+- **多维度筛选**（2.2.2，需要宿主支持 `categoryComics.loadMulti`，见
+  PicaComic `4.6.3-mod`）：源里新增 `loadMulti(groupParams, options, page)`，
+  `groupParams` 是所有分组当前选中值，如
+  `{"题材":"4","读者群":"cate=3262","地域":"zone=2304"}`。宿主的分类列表页会把
+  「其它小组」（标签数 ≤ 16 的组，即读者群/地域）平铺成可选项，选中即重载，
+  于是题材 + 读者群 + 地域 + 进度 + 排序可以同时生效。
+  服务端实测支持四维叠加：冒险 1477 部，叠加少年 + 日本 + 连载中后剩 **1 部**。
+  老宿主没有 `loadMulti`，会继续走单维 `load`，行为不变（不会报错）
 - **说明**：explore 的「分类浏览」只能展示每个题材的第一页（JS 源的
   `singlePageWithMultiPart` 在宿主侧不支持「查看全部」），要翻页请走「分类」Tab
 - 图片请求携带 `Referer: https://manhua.zaimanhua.com/`，用于规避防盗链
@@ -117,6 +125,8 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 
 ### 版本变更记录
 
+- 2.2.2：新增 `categoryComics.loadMulti` 多维度筛选（题材+读者群+地域+进度+排序
+  同时生效，需宿主 4.6.3-mod；老宿主自动退回单维）
 - 2.2.1：收藏 `size` 提到 50 + 防重复页；分类页补读者群/地域两组；
   列表/搜索改用服务端 `totalNum`/`total` 精确算页数；`errno==99` 判定登录失效；
   神隐作品打标签与准确文案
