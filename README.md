@@ -39,7 +39,7 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 
 ## zaimanhua.js 说明
 
-- `key = "zaimanhua"`，`version = "2.2.0"`，导入方式与拷贝漫画源相同
+- `key = "zaimanhua"`，`version = "2.2.1"`，导入方式与拷贝漫画源相同
 - 接口前缀候选（启动时依次探测，首个返回 200 的被采用）：**v4api 优先**，
   `https://v4api.zaimanhua.com/app/v1` → `https://m.zaimanhua.com/api/app/v1`。
   两者不是同一套接口：v4api 是官方新版接口，分类/标签与书架返回的作品比
@@ -50,19 +50,31 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
 - 公开接口（人气榜 / 分类 / 搜索 / 详情）在已登录时也**顺带带上 `Authorization`**
   —— 再漫画登录后能看到的作品更多；token 被服务端拒掉时自动去掉身份重试一次，
   浏览不会因为一个过期的 token 整个挂掉
-- `filter/list` 显式传 `cate=0`（受众）与 `zone=0`（地区）表示「全部」；
+- `filter/list` 显式传 `cate=0`（读者群）与 `zone=0`（地域）表示「全部」；
   不传时服务端可能走另一套默认筛选，标签下会少一批
+- 读者群 / 地域**是生效的**（2026-10-20 实测）：`filter/list` 加 `cate=3262`
+  （少年漫画）时「冒险」的 `totalNum` 从 1477 降到 1205，加 `zone` 同理。
+  早前「实测 14 个候选名均无效」的结论是错的，2.2.1 已把这两组做进分类页
 - 已实现：登录、收藏（订阅）、人气榜 / 最近更新 / 分类浏览（explore）、搜索、
   详情、章节图片、下载（下载与内置源共用同一链路，只要 `loadInfo` 非空即可）、
-  自动签到与任务领奖
+  自动签到与任务领奖、以及「分类」Tab 的三组入口（题材 / 读者群 / 地域）
 - 登录：`POST https://account-api.zaimanhua.com/v1/login/passwd`，表单
   `username` + `passwd=md5(密码)` 小写十六进制。成功后 token 写入源数据
   （`saveData`），重开 App 自动恢复，后续请求带 `Authorization: Bearer <token>`
 - 收藏：再漫画是单书架，故 `multiFolder = false`。`/comic/sub/list` 读书架、
   `/comic/sub/add` 与 `/comic/sub/del` 增删；详情页收藏状态取自
   `/comic/sub/checkIsSub`
-- 未实现：「分类」Tab。JS 源的 `category` 是解析期静态字段，而分类 tagId
-  只能运行时从 `filter/classify` 取得，因此分类入口放在 explore 的「分类浏览」里
+  - 每页请求 `size=50`（`shelfPageSize`）。书架接口对 `size` 的处理与列表接口
+    不同、会少返回，值调大只减少翻页次数，不影响正确性
+  - 防重复页：若某页首条 id 与上一页相同，判定服务端对越界页原样返回，停止翻页
+    （否则 `nextPage` 恒 `page+1` 会一直翻下去）
+  - **收藏数量天然比官方 App 少**：官方书架是 `/comic/sub/list`（漫画）+
+    `/novel/sub/list`（轻小说）两个，本项目只做漫画，轻小说条目不计入
+- 「分类」Tab：三组入口（题材 / 读者群 / 地域），`categoryParams` 用
+  `cate=3262`、`zone=2304` 这样的前缀区分组别，题材组仍传纯 tagId；
+  `categoryComics.load` 见到 `=` 就按 `k=v` 覆盖参数，否则当作题材
+- **说明**：explore 的「分类浏览」只能展示每个题材的第一页（JS 源的
+  `singlePageWithMultiPart` 在宿主侧不支持「查看全部」），要翻页请走「分类」Tab
 - 图片请求携带 `Referer: https://manhua.zaimanhua.com/`，用于规避防盗链
 - **已知风险点（唯一）**：`Convert.md5` 在 Dart 侧只接受字节序列，传字符串会被
   静默吞掉并返回 null。脚本用 `Convert.md5(Convert.decodeBase64(Convert.encodeBase64(原文)))`
@@ -73,22 +85,43 @@ PicaComic 的自维护漫画源仓库。主要解决三件事：
   （`sumSignTask` 是累计签到里程碑，其 id 属另一套编号，领奖时跳过）。
   挂在 `init()` 上：每次冷启动 App 跑一次，当天已跑过则跳过。JS 源没有定时器，
   做不到「每天定点」执行；失败只写日志、不记日期，下次启动重试
-- 分页：`nextPage` 只要本页有数据就认为还有下一页。**不能**按「本页条数 ≥
-  pageSize(20)」判断 —— `/comic/sub/list` 会无视 `size` 只回很少几条，
-  那样会被误判成「没有下一页」，书架里后面的收藏整个看不到
+- 分页：列表类接口优先用服务端总数精确算页数 —— `filter/list` 用 `totalNum`、
+  `search/index` 用 `total`（实测「恋爱」`total=1021`），算不出来才退回
+  `nextPage`。**不能**按「本页条数 ≥ pageSize(20)」判断 —— `/comic/sub/list`
+  会无视 `size` 只回很少几条，那样会被误判成「没有下一页」，书架里后面的收藏
+  整个看不到（2.0.x 就是栽在这里）
+- 登录失效：优先认 `errno == 99`（实测未登录打 `/comic/sub/list` 返回 HTTP 200
+  + body `{"errno":99,"errmsg":"请先登录"}`），文案匹配只作兜底；公开接口带的
+  token 被拒时自动去掉身份重试一次
+- 神隐作品：搜索/列表接口会摘掉它们，但详情/章节接口带 `_v`（我们恒带 2.3.8）
+  仍能返回，字段 `hidden=1`。详情页会多出一组「可见性: 已神隐」标签，
+  `loadEp` 遇到神隐章节的 `canRead=false` 时给出「需有效登录状态与足够等级」
 - 章节名：标题含「卷」（单行本）的追加 `(可能需购买)`。再漫画的「卷」多数要
   购买或更高等级才能读，而详情接口不返回可读性，只能按标题提示；`loadEp`
   取不到时抛 `章节不可阅读(需购买或更高等级): <章节名>`，不再只说「需要登录」
-- **未联调**：本机到 `m.zaimanhua.com` / `v4api.zaimanhua.com` /
-  `manhua.zaimanhua.com` 至今 TCP 不通（2026-10-16 与 2026-10-19 两次实测 curl
-  均 `http=000`）。已完成 `node --check` 语法检查与 74 项离线契约断言（含 md5、
-  登录表单、token 持久化与恢复、收藏增删、书架解析、签到与领奖的请求形态、
-  分页判定、「卷」标注、两套域名的 `_v` 与客户端标识、公开接口带 token 及
-  被拒后的回退重试），真实接口可用性仍需真机确认
+- **接口实测（2026-10-20）**：本机 pwsh 到 `v4api.zaimanhua.com` 仍 TLS 不通，
+  但经外部抓取通道可以直连核对契约，实测结论：
+  - `filter/list` 的 `size` 不封顶（`size=50` 实回 50 条）；**不传 `size` 只给
+    18 条**，所以必须显式传；`cate`/`zone` 传 0 与不传等价
+  - `cate=3262`（少年漫画）使「冒险」`totalNum` 1477 → 1205，`status=2309`
+    （连载中）→ 5790，证明读者群/进度筛选生效
+  - `search/index` 与新版 `search/unified` 同一关键词条数完全一致，v4api 相对
+    m 站也没有数量优势；页长参数一个是 `size`、一个是 `pageSize`
+  - `/comic/sub/list`、`/novel/sub/list` 未登录均 HTTP 200 + `errno 99`
+  - `search/index` 只匹配标题/作者/别名，不匹配 `types` 标签（搜「百合」为 0 条
+    是因为「百合」只出现在题材里）
 - **真机已验证**：2026-10-19 设备日志显示章节接口
   `GET /comic/chapter/{comicId}/{chapterId}?_v=15` 并发请求均返回 200，
   逐话拉取图片列表正常（下载「获取图片信息」阶段偏慢的原因见
   PicaComic 的 `CustomDownloadingItem.getLinks`，与本源无关）
+
+### 版本变更记录
+
+- 2.2.1：收藏 `size` 提到 50 + 防重复页；分类页补读者群/地域两组；
+  列表/搜索改用服务端 `totalNum`/`total` 精确算页数；`errno==99` 判定登录失效；
+  神隐作品打标签与准确文案
+- 2.2.0：v4api 优先探测、公开接口带账号、分页判定修正、「卷」标注
+- 2.0.2：新增分类页；2.0.1：修复登录；2.0.0：首个版本
 
 ## 从上游收编的源（komiic / ikmmh / baozi）
 

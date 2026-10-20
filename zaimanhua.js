@@ -4,7 +4,7 @@ class ZaiManHua extends ComicSource {
 
     key = "zaimanhua"
 
-    version = "2.2.0"
+    version = "2.2.1"
 
     minAppVersion = "3.1.0"
 
@@ -43,6 +43,15 @@ class ZaiManHua extends ComicSource {
     taskClaimable = 2
 
     pageSize = 20
+
+    /// 书架(/comic/sub/list)每页条数。
+    /// 书架接口对 size 的处理和列表接口不同(会少返回), 提高请求值不会有害;
+    /// 一共 50 条起步能减少拦住"某页不足 pageSize 就以为到底"的翻页次数。
+    shelfPageSize = 50
+
+    /// 上一页书架返回的首条 id: 服务端若对越界页重复返回同一页, 靠它刹车,
+    /// 否则 nextPage 恒返回 page+1 会一直翻下去。
+    _shelfPrevFirstId = null
 
     _base = null
 
@@ -261,14 +270,17 @@ class ZaiManHua extends ComicSource {
         }
         if (data.errno !== undefined && data.errno !== 0) {
             var message = data.errmsg || ("接口返回错误 " + data.errno)
+            /// errno 99 是站点的"请先登录"(实测: 未登录打 /comic/sub/list 返回 HTTP 200
+            /// + body errno 99), 比匹配 errmsg 文案可靠, 两者取或
+            var loginInvalid = data.errno === 99 || this.isLoginMessage(message)
             /// 公开接口顺带带的 token 被拒了(常见于 token 过期): 去掉身份原样重来
             /// 一次 —— 浏览不该因为一个过期的 token 整个挂掉
-            if (!authed && sendToken && this.isLoginMessage(message)) {
+            if (!authed && sendToken && loginInvalid) {
                 log('warning', '再漫画', 'token 被拒, 改用未登录身份重试: ' + message)
                 return this.request(path, params, false, false)
             }
             /// token 失效时抛出包含 Login expired 的错误, App 会据此自动重登
-            if (authed && this.isLoginMessage(message)) {
+            if (authed && loginInvalid) {
                 throw "Login expired: " + message
             }
             throw message
@@ -548,12 +560,15 @@ class ZaiManHua extends ComicSource {
         }
         var data = await this.api("/comic/filter/list", params)
         var list = (data.data && data.data.comicList) ? data.data.comicList : []
+        /// 列表接口给了 totalNum(实测 "冒险" 1477 部), 按它算总页数比按本页条数猜准,
+        /// 既能翻到最后一页, 也不会多请求一轮空页
+        var total = (data.data && data.data.totalNum) ? data.data.totalNum : 0
         var self = this
         return {
             comics: list.map(function (c) {
                 return self.parseComic(c)
             }),
-            maxPage: this.nextPage(list, page)
+            maxPage: total > 0 ? Math.ceil(total / this.pageSize) : this.nextPage(list, page)
         }
     }
 
@@ -622,9 +637,14 @@ class ZaiManHua extends ComicSource {
         }
     }
 
-    /// 分类页(「分类」tab 下的再漫画页): 题材网格。
-    /// tagId 取自 /comic/filter/classify 的题材组; 该接口不认读者群/地域参数
-    /// (实测 audience/readerGroup/zone/region 等 14 个候选名均无效), 故这两组不列。
+    /// 分类页(「分类」tab 下的再漫画页): 题材 / 读者群 / 地域 三组入口。
+    ///
+    /// tagId 全部取自 /comic/filter/classify 的四组(题材 id=1, 读者群 id=6,
+    /// 进度 id=5, 地域 id=4)。进度与排序在 categoryComics 的下拉里, 这两组做成网格。
+    /// 参数名实测有效(2026-10-20): filter/list 带 cate=3262(少年漫画) 时"冒险"的
+    /// totalNum 从 1477 降到 1205, 带 zone 同理 —— 早前"不认读者群/地域"的结论是错的。
+    /// 组与组用 "key=value" 前缀区分, 因为 categoryComics.load 只收到一个 param,
+    /// 而题材组的 param 是纯数字, 不会与 "cate="/"zone=" 冲突。
     category = {
         title: "再漫画",
         parts: [
@@ -644,11 +664,27 @@ class ZaiManHua extends ComicSource {
                     "3325", "3326", "3327", "3328", "3365", "4459", "4518", "5077", "5806", "5848",
                     "6219", "6316", "6437", "7568", "7900", "13627", "17192", "18522", "23323", "23388",
                     "30788", "31137", "34093", "36172"]
+            },
+            {
+                name: "读者群",
+                type: "fixed",
+                categories: ["全部", "少年漫画", "少女漫画", "青年漫画", "女青漫画"],
+                itemType: "category",
+                categoryParams: ["cate=0", "cate=3262", "cate=3263", "cate=3264", "cate=13626"]
+            },
+            {
+                name: "地域",
+                type: "fixed",
+                categories: ["全部", "日本", "韩国", "欧美", "港台", "内地", "其他"],
+                itemType: "category",
+                categoryParams: ["zone=0", "zone=2304", "zone=2305", "zone=2306", "zone=2307",
+                    "zone=2308", "zone=8435"]
             }
         ]
     }
 
-    /// 分类页的筛选与列表: 题材(param) + 进度 + 排序。
+    /// 分类页的筛选与列表: 题材/读者群/地域(param) + 进度 + 排序。
+    /// param 可能来自三组网格: 题材给纯 tagId, 读者群/地域给 "cate=3262"/"zone=2304"。
     /// 分页用接口返回的 totalNum 精确计算, 不再按本次条数猜。
     categoryComics = {
         optionList: [
@@ -669,12 +705,18 @@ class ZaiManHua extends ComicSource {
                 page: page,
                 size: this.pageSize,
                 sortType: String(options[1] || "").replace("*", "") || "1",
-                /// 同 filterList: 显式声明"全部受众 / 全部地区"
+                /// 同 filterList: 显式声明"全部受众 / 全部地区"(0 = 全部)
                 cate: 0,
                 zone: 0
             }
             if (param) {
-                params.theme = param
+                var eq = param.indexOf("=")
+                if (eq > 0) {
+                    /// 读者群 / 地域: 直接覆盖 cate / zone, 不限定题材
+                    params[param.substring(0, eq)] = param.substring(eq + 1)
+                } else {
+                    params.theme = param
+                }
             }
             var status = String(options[0] || "").replace("*", "")
             if (status && status !== "0") {
@@ -740,17 +782,23 @@ class ZaiManHua extends ComicSource {
                 keyword: keyword
             })
             var list = (data.data && data.data.list) ? data.data.list : []
+            /// 搜索接口给的是 total(实测"恋爱" total=1021, 每页 20 条);
+            /// 注意页长参数叫 size, 新版 /search/unified 才叫 pageSize
+            var total = (data.data && data.data.total) ? data.data.total : 0
+            log('info', '再漫画', '搜索 "' + keyword + '" page ' + page + ': ' + list.length + '/' + total)
             var self = this
             return {
                 comics: list.map(function (c) {
                     return self.parseComic(c)
                 }),
-                maxPage: this.nextPage(list, page)
+                maxPage: total > 0 ? Math.ceil(total / this.pageSize) : this.nextPage(list, page)
             }
         }
     }
 
-    /// 收藏(订阅): 再漫画是单书架, 故 multiFolder 为 false
+    /// 收藏(订阅): 再漫画是单书架, 故 multiFolder 为 false。
+    /// 官方书架其实是两个(/comic/sub/list 漫画 + /novel/sub/list 轻小说),
+    /// 本项目只做漫画, 轻小说条目不计入, 所以收藏数量天然比官方 App 少那部分。
     favorites = {
         multiFolder: false,
 
@@ -765,9 +813,18 @@ class ZaiManHua extends ComicSource {
                 status: 0,
                 firstLetter: "",
                 page: page,
-                size: this.pageSize
+                size: this.shelfPageSize
             })
             var list = (json.data && json.data.subList) ? json.data.subList : []
+            log('info', '再漫画', '书架 page ' + page + ': ' + list.length + ' 条')
+            /// 服务端若对越界页原样返回上一页, nextPage 恒 page+1 会无限翻页;
+            /// 首条 id 与上一页相同即认定到底
+            var firstId = list.length > 0 ? "" + list[0].id : null
+            if (page > 1 && firstId !== null && firstId === this._shelfPrevFirstId) {
+                log('warning', '再漫画', '书架 page ' + page + ' 与上一页首条重复, 停止翻页')
+                return { comics: [], maxPage: page }
+            }
+            this._shelfPrevFirstId = firstId
             var self = this
             return {
                 comics: list.map(function (c) {
@@ -784,6 +841,13 @@ class ZaiManHua extends ComicSource {
             var d = (data.data && data.data.data) ? data.data.data : null
             if (!d) {
                 throw "漫画不存在或已被删除"
+            }
+
+            /// 神隐作品: 搜索/列表接口会把它摘掉, 但详情接口带 _v(我们恒带 2.3.8)
+            /// 仍能返回完整信息, 字段 hidden=1。把它显式标出来, 免得用户以为源坏了。
+            var hidden = d.hidden === 1 || d.hidden === "1"
+            if (hidden) {
+                log('info', '再漫画', '详情: 该作品标记为神隐(hidden=1)')
             }
 
             var tags = {}
@@ -804,6 +868,10 @@ class ZaiManHua extends ComicSource {
             }
             if (d.last_update_chapter_name) {
                 tags["最新"] = [d.last_update_chapter_name]
+            }
+            if (hidden) {
+                /// 放在最后一组, 不覆盖接口给的连载状态
+                tags["可见性"] = ["已神隐(仅登录/有权限可见)"]
             }
 
             /// 章节接口按最新章节在前返回, 这里倒序成"第 1 话在前"
@@ -849,6 +917,9 @@ class ZaiManHua extends ComicSource {
             if (d.canRead === false) {
                 /// 带上章节名: 再漫画的"卷"(单行本)多数要购买或更高等级才能读,
                 /// 只说"需要登录"会让人以为是自己没登录, 白折腾半天
+                if (d.hidden === 1 || d.hidden === "1") {
+                    throw "章节已神隐, 需有效登录状态与足够等级方可阅读: " + (d.title || epId)
+                }
                 throw "章节不可阅读(需购买或更高等级): " + (d.title || epId)
             }
             var urls = d.page_url || []
