@@ -1,10 +1,10 @@
 {
-  "updated": "2026-10-27T09:01:22Z",
+  "updated": "2026-10-28T09:41:29Z",
   "order": [
     "mangacopy.com",
-    "copymanga.info",
     "copymanga.org",
     "copymanga.net",
+    "copymanga.info",
     "copymanga.site"
   ],
   "results": [
@@ -25,8 +25,8 @@
     },
     {
       "domain": "copymanga.info",
-      "status": 200,
-      "ok": true
+      "status": 0,
+      "ok": false
     },
     {
       "domain": "copymanga.site",
